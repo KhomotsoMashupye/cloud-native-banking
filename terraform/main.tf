@@ -253,3 +253,100 @@ resource "aws_db_instance" "read_replica" {
 }
 
 
+# Amazon ECR Repository
+
+resource "aws_ecr_repository" "banking_app_repo" {
+  name                 = "banking-microservice"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+resource "aws_cognito_user_pool" "banking_user_pool" {
+  name = "banking-app-users"
+
+  password_policy {
+    minimum_length    = 12
+    require_lowercase = true
+    require_numbers   = true
+    require_symbols   = true
+    require_uppercase = true
+  }
+
+  auto_verified_attributes = ["email"]
+  deletion_protection = "ACTIVE" 
+}
+#COGNITO
+
+resource "aws_cognito_user_pool_client" "banking_client" {
+  name         = "banking-web-client"
+  user_pool_id = aws_cognito_user_pool.banking_user_pool.id
+  
+  explicit_auth_flows = ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
+}
+
+# CLOUDWATCH LOG GROUP
+
+resource "aws_cloudwatch_log_group" "eks_log_group" {
+  name              = "/aws/eks/banking-cluster/logs"
+  retention_in_days = 7
+}
+
+# SNS 
+resource "aws_sns_topic" "banking_alerts" {
+  name = "banking-transaction-alerts"
+  
+  kms_master_key_id = "alias/aws/sns" 
+}
+
+# SQS Queue (Processing)
+
+resource "aws_sqs_queue" "transaction_queue" {
+  name                      = "banking-transaction-queue"
+  delay_seconds             = 0
+  max_message_size          = 262144
+  message_retention_seconds = 86400 
+  receive_wait_time_seconds = 10    
+  
+  sqs_managed_sse_enabled = true
+}
+
+# SNS to SQS Subscription
+
+resource "aws_sns_topic_subscription" "alerts_to_queue" {
+  topic_arn = aws_sns_topic.banking_alerts.arn
+  protocol  = "sqs"
+  endpoint  = aws_sqs_queue.transaction_queue.arn
+  
+  raw_message_delivery = true
+}
+
+# SQS Policy (Allow SNS to Push)
+
+resource "aws_sqs_queue_policy" "sns_to_sqs_policy" {
+  queue_url = aws_sqs_queue.transaction_queue.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = { Service = "sns.amazonaws.com" }
+        Action    = "sqs:SendMessage"
+        Resource  = aws_sqs_queue.transaction_queue.arn
+        Condition = {
+          ArnEquals = { "aws:SourceArn" = aws_sns_topic.banking_alerts.arn }
+        }
+      }
+    ]
+  })
+}
+# CLOUDWATCH LOG GROUP 
+
+resource "aws_cloudwatch_log_group" "eks_cluster_logs" {
+  name              = "/aws/eks/eks-banking-cluster/cluster"
+  retention_in_days = 7
+}
+
