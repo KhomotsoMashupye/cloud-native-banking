@@ -349,4 +349,155 @@ resource "aws_cloudwatch_log_group" "eks_cluster_logs" {
   name              = "/aws/eks/eks-banking-cluster/cluster"
   retention_in_days = 7
 }
+# S3 DATA LAKE 
 
+resource "aws_s3_bucket" "analytics_lake" {
+  bucket        = "banking-analytics-lake-2026"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_versioning" "analytics_lake_versioning" {
+  bucket = aws_s3_bucket.analytics_lake.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+# AWS GLUE
+
+resource "aws_glue_catalog_database" "analytics_db" {
+  name = "banking_analytics"
+}
+
+# Glue Crawler
+
+resource "aws_glue_crawler" "s3_crawler" {
+  name          = "banking-s3-crawler"
+  role          = aws_iam_role.glue_role.arn
+  database_name = aws_glue_catalog_database.analytics_db.name
+
+  s3_target {
+    path = "s3://${aws_s3_bucket.analytics_lake.bucket}/data/"
+  }
+}
+
+resource "aws_iam_role" "glue_role" {
+  name = "banking-glue-service-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "glue.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+resource "aws_iam_role_policy_attachment" "glue_service_role" {
+  role       = aws_iam_role.glue_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+}
+
+resource "aws_iam_role_policy" "glue_s3_access" {
+  name = "glue-s3-datalake-access"
+  role = aws_iam_role.glue_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.analytics_lake.arn,
+          "${aws_s3_bucket.analytics_lake.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+# Athena Query Results Bucket
+
+resource "aws_s3_bucket" "athena_results" {
+  bucket        = "banking-athena-results-2026"
+  force_destroy = true
+}
+
+# Athena Workgroup
+
+resource "aws_athena_workgroup" "analytics" {
+  name = "banking-analytics-workgroup"
+
+  configuration {
+    enforce_workgroup_configuration = true
+
+    result_configuration {
+      output_location = "s3://${aws_s3_bucket.athena_results.bucket}/results/"
+    }
+  }
+}
+
+# QuickSight 
+
+resource "aws_quicksight_account_subscription" "quicksight" {
+  account_name          = "banking-analytics"
+  authentication_method = "IAM_AND_QUICKSIGHT"
+  edition               = "STANDARD"
+
+  notification_email = "motsomash2242@gmail.com"
+
+  depends_on = [
+    aws_athena_workgroup.analytics
+  ]
+}
+
+
+# QuickSight IAM Role
+
+resource "aws_iam_role" "quicksight_role" {
+  name = "banking-quicksight-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "quicksight.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+resource "aws_iam_role_policy" "quicksight_access" {
+  name = "quicksight-athena-access"
+  role = aws_iam_role.quicksight_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "athena:*",
+          "glue:GetDatabase",
+          "glue:GetDatabases",
+          "glue:GetTable",
+          "glue:GetTables",
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
