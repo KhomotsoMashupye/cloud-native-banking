@@ -42,7 +42,7 @@ jobs:
           IMAGE_URI=$ECR_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVICE:$IMAGE_TAG
 
           echo "Building $SERVICE..."
-          docker build -t $IMAGE_URI ./applications
+          docker build -t $IMAGE_URI ./accounts
 
           echo "Pushing $SERVICE to ECR..."
           docker push $IMAGE_URI
