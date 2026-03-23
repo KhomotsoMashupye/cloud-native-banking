@@ -178,3 +178,78 @@ resource "aws_eks_node_group" "eks_node_group" {
 
   depends_on = [aws_iam_role_policy_attachment.node_policies]
 }
+# RDS Security Group
+
+resource "aws_security_group" "rds_sg" {
+  name        = "banking-rds-sg"
+  description = "Allow inbound traffic from EKS nodes"
+  vpc_id      = aws_vpc.eks_vpc.id
+
+  ingress {
+    description     = "Postgres from EKS Nodes"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    
+    security_groups = [aws_eks_cluster.eks_cluster.vpc_config[0].cluster_security_group_id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# RDS Subnet Group
+
+resource "aws_db_subnet_group" "rds_subnets" {
+  name       = "banking-db-subnet-group"
+  subnet_ids = aws_subnet.eks_private_subnet[*].id
+
+  tags = { Name = "Banking DB Subnets" }
+}
+
+# Primary RDS Instance
+
+resource "aws_db_instance" "primary_db" {
+  identifier           = "banking-db-primary"
+  engine               = "postgres"
+  
+  engine_version       = "16.11" 
+  
+  instance_class       = "db.t3.medium"
+  allocated_storage    = 20
+  db_name              = "bankingdb"
+  username             = "postgres"
+  password             = var.db_password
+  backup_retention_period   = 7
+  apply_immediately = true
+  
+  db_subnet_group_name   = aws_db_subnet_group.rds_subnets.name
+  vpc_security_group_ids = [aws_security_group.rds_sg.id]
+  
+  multi_az             = false
+  skip_final_snapshot  = true
+  publicly_accessible  = false
+}
+variable "db_password" {
+  description = "Master password for the RDS database"
+  type        = string
+  sensitive   = true 
+}
+
+# Read Replica
+
+resource "aws_db_instance" "read_replica" {
+  identifier            = "banking-db-replica"
+  replicate_source_db   = aws_db_instance.primary_db.identifier
+  instance_class        = "db.t3.medium"
+  # Read replicas inherit the engine/version but need their own SG
+  vpc_security_group_ids = [aws_security_group.rds_sg.id]
+  skip_final_snapshot   = true
+  parameter_group_name  = aws_db_instance.primary_db.parameter_group_name
+}
+
+
