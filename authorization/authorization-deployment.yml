@@ -1,0 +1,23 @@
+# Accounts Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authorization
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: authorization-service
+  template:
+    metadata:
+      labels:
+        app: authorization-service
+    spec:
+      containers:
+        - name: authorization
+          image: 167217327829.dkr.ecr.af-south-1.amazonaws.com/authorization:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+              
+                 
