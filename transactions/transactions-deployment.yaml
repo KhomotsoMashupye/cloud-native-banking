@@ -1,0 +1,23 @@
+
+# Transactions Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transactions
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: transactions-service
+  template:
+    metadata:
+      labels:
+        app: transactions-service
+    spec:
+      containers:
+        - name: transactions
+          image: 167217327829.dkr.ecr.af-south-1.amazonaws.com/transactions:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          
