@@ -353,7 +353,7 @@ resource "aws_cloudwatch_log_group" "eks_cluster_logs" {
 
 resource "aws_s3_bucket" "analytics_lake" {
   bucket        = "banking-analytics-lake-2026"
-  force_destroy = true
+  force_destroy = false
 }
 
 resource "aws_s3_bucket_versioning" "analytics_lake_versioning" {
@@ -445,59 +445,3 @@ resource "aws_athena_workgroup" "analytics" {
   }
 }
 
-# QuickSight 
-
-resource "aws_quicksight_account_subscription" "quicksight" {
-  account_name          = "banking-analytics"
-  authentication_method = "IAM_AND_QUICKSIGHT"
-  edition               = "STANDARD"
-
-  notification_email = "motsomash2242@gmail.com"
-
-  depends_on = [
-    aws_athena_workgroup.analytics
-  ]
-}
-
-
-# QuickSight IAM Role
-
-resource "aws_iam_role" "quicksight_role" {
-  name = "banking-quicksight-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Service = "quicksight.amazonaws.com"
-        }
-        Action = "sts:AssumeRole"
-      }
-    ]
-  })
-}
-resource "aws_iam_role_policy" "quicksight_access" {
-  name = "quicksight-athena-access"
-  role = aws_iam_role.quicksight_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "athena:*",
-          "glue:GetDatabase",
-          "glue:GetDatabases",
-          "glue:GetTable",
-          "glue:GetTables",
-          "s3:GetObject",
-          "s3:ListBucket"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-}
