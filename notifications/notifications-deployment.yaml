@@ -1,0 +1,24 @@
+
+# Notification Deployment
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notifications-service
+  template:
+    metadata:
+      labels:
+        app: notifications-service
+    spec:
+      containers:
+        - name: notifications
+          image: 167217327829.dkr.ecr.af-south-1.amazonaws.com/notifications:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 4200
+          
