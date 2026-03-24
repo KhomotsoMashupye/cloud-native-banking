@@ -1,4 +1,4 @@
-name: Accounts CI/CD 
+name: Microservices CI/CD  EKS
 
 on:
   push:
@@ -6,19 +6,19 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read 
+  contents: read
 
 env:
   AWS_REGION: af-south-1
   ECR_ACCOUNT: "167217327829"
 
 jobs:
-  build-and-deploy-accounts:
+  build-and-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
-      #  Checkout code
+      # 1️⃣ Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -34,20 +34,23 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      #  Build & push Docker image for accounts only
-      - name: Build and push accounts Docker image
+      # Build & push Docker images for all microservices
+      - name: Build and push Docker images
         run: |
-          SERVICE="accounts"
-          IMAGE_TAG=$(date +%Y%m%d%H%M%S)
-          IMAGE_URI=$ECR_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVICE:$IMAGE_TAG
+          SERVICES=("accounts" "authorization" "notifications" "transactions")
+          for SERVICE in "${SERVICES[@]}"; do
+            IMAGE_TAG=$(date +%Y%m%d%H%M%S)
+            IMAGE_URI=$ECR_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVICE:$IMAGE_TAG
 
-          echo "Building $SERVICE..."
-          docker build -t $IMAGE_URI ./accounts
+            echo "Building $SERVICE..."
+            docker build -t $IMAGE_URI ./$SERVICE
 
-          echo "Pushing $SERVICE to ECR..."
-          docker push $IMAGE_URI
+            echo "Pushing $SERVICE to ECR..."
+            docker push $IMAGE_URI
 
-          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+            # Export for later steps
+            echo "IMAGE_URI_${SERVICE}=$IMAGE_URI" >> $GITHUB_ENV
+          done
 
       # Set up kubectl
       - name: Set up kubectl
@@ -55,18 +58,23 @@ jobs:
         with:
           version: 'v1.30.0'
 
-      # 6 Configure kubeconfig for EKS
+      # Configure kubeconfig for EKS
       - name: Configure kubeconfig
         run: |
           aws eks update-kubeconfig --region $AWS_REGION --name eks-banking-cluster
 
-      #  Deploy accounts microservice
-      - name: Deploy accounts microservice
+      #  Deploy all microservices
+      - name: Deploy microservices
         run: |
-          DEPLOYMENT="accounts"
-          IMAGE_URI="${IMAGE_URI}"
+          DEPLOYMENTS=("accounts" "authorization" "notifications" "transactions")
+          
+          for DEPLOYMENT in "${DEPLOYMENTS[@]}"; do
+            IMAGE_VAR="IMAGE_URI_${DEPLOYMENT}"
+            IMAGE_URI="${!IMAGE_VAR}"
 
-          echo "Deploying $DEPLOYMENT using image $IMAGE_URI..."
-          kubectl set image deployment/$DEPLOYMENT $DEPLOYMENT=$IMAGE_URI -n default
+            echo "Deploying $DEPLOYMENT using image $IMAGE_URI..."
+            kubectl set image deployment/$DEPLOYMENT $DEPLOYMENT=$IMAGE_URI -n default
 
-          kubectl rollout status deployment/$DEPLOYMENT --timeout=5m || exit 1
+            
+            kubectl rollout status deployment/$DEPLOYMENT --timeout=5m || exit 1
+          done
