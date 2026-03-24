@@ -6,7 +6,7 @@ This project simulates a banking platform with multiple services, providing hand
 
 ---
 
-## 🏗️ Project Overview
+##  Project Overview
 
 This project simulates a **cloud-native banking platform** with the following microservices:
 
@@ -22,7 +22,7 @@ The system demonstrates **end-to-end DevOps and cloud practices**, from infrastr
 
 ---
 
-## 🚀 Key Features
+##  Key Features
 
 ### Infrastructure-as-Code (Terraform)
 - VPC with public and private subnets across two availability zones  
@@ -62,7 +62,7 @@ The system demonstrates **end-to-end DevOps and cloud practices**, from infrastr
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 - **Cloud Provider:** AWS  
 - **Compute & Orchestration:** Amazon EKS, Kubernetes  
 - **Containerization:** Docker, ECR  
@@ -74,7 +74,7 @@ The system demonstrates **end-to-end DevOps and cloud practices**, from infrastr
 
 ---
 
-## 📚 Key Learnings & Reflections
+##  Key Learnings & Reflections
 - CI/CD pipelines rarely work perfectly on the first attempt — debugging is key (**16 runs for full success!**)  
 - Observability is critical for maintaining microservices at scale  
 - Infrastructure-as-code ensures reproducibility, compliance, and easier troubleshooting  
@@ -89,7 +89,7 @@ The system demonstrates **end-to-end DevOps and cloud practices**, from infrastr
 
 ---
 
-## 🔮 Future Improvements
+##  Future Improvements
 - Add real-time event streaming (**Kinesis** or **Kafka**)  
 - Integrate automated vulnerability scanning in CI/CD pipelines  
 - Simulate migration scenarios for more cloud experience  
