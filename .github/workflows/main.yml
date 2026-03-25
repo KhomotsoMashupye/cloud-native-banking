@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      # 1️⃣ Checkout code
+      #  Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -62,6 +62,21 @@ jobs:
       - name: Configure kubeconfig
         run: |
           aws eks update-kubeconfig --region $AWS_REGION --name eks-banking-cluster
+
+
+         # Apply Kubernetes manifests
+      - name: Apply Kubernetes manifests
+        run: |
+          echo "Applying manifests for all microservices..."
+          MANIFEST_DIRS=("accounts" "authorization" "notifications" "transactions")
+          for DIR in "${MANIFEST_DIRS[@]}"; do
+            if [ -d "./$DIR" ]; then
+              kubectl apply -f ./$DIR -n default
+              kubectl rollout status deployment/$DIR --timeout=5m || exit 1
+            else
+              echo "Directory ./$DIR does not exist, skipping..."
+            fi
+          done
 
       #  Deploy all microservices
       - name: Deploy microservices
