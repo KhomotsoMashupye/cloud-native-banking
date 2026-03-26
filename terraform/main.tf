@@ -12,7 +12,7 @@ provider "aws" {
   region = var.aws_region
 }
 
-# --- KMS KEY (new) ---
+# KMS KEY 
 
 resource "aws_kms_key" "banking_key" {
   description             = "Master key for banking data"
