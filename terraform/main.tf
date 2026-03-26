@@ -239,7 +239,7 @@ resource "aws_db_instance" "primary_db" {
   identifier           = "banking-db-primary"
   engine               = "postgres"
   
-  engine_version       = "16.1" 
+  engine_version       = "16" 
   
   instance_class       = "db.t3.medium"
   allocated_storage    = 20
@@ -381,7 +381,7 @@ resource "aws_cloudwatch_log_group" "eks_cluster_logs" {
 # S3 DATA LAKE 
 
 resource "aws_s3_bucket" "analytics_lake" {
-  bucket        = "banking-analytics-lake-2026"
+  bucket        = "banking-analytics-lake-2242"
   force_destroy = false
 }
 
