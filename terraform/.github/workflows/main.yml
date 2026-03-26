@@ -1,0 +1,89 @@
+name: Microservices CI/CD 
+
+on:
+  push:
+    branches: [ dev ]
+  workflow_dispatch:
+
+permissions:
+  contents: read  
+
+env:
+  AWS_REGION: af-south-1
+  ECR_ACCOUNT: "167217327829"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      #  Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      #  Configure AWS credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      #  Login to Amazon ECR
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      #  Build & push Docker images
+      - name: Build and push Docker images
+        run: |
+          SERVICES=("accounts" "authorization" "notifications" "transactions")
+          for SERVICE in "${SERVICES[@]}"; do
+            IMAGE_TAG=$(date +%Y%m%d%H%M%S)
+            IMAGE_URI=$ECR_ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com/$SERVICE:$IMAGE_TAG
+
+            echo "Building $SERVICE..."
+            docker build -t $IMAGE_URI ./$SERVICE
+
+            echo "Pushing $SERVICE to ECR..."
+            docker push $IMAGE_URI
+
+            # Export
+            echo "IMAGE_URI_${SERVICE}=$IMAGE_URI" >> $GITHUB_ENV
+          done
+
+      #  Set up kubectl
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.30.0'
+
+      # Configure kubeconfig for EKS
+      - name: Configure kubeconfig
+        run: |
+          aws eks update-kubeconfig --region $AWS_REGION --name eks-banking-cluster
+
+      # Test EKS access
+      - name: Test EKS access
+        run: |
+          kubectl config view
+          kubectl get nodes
+
+      # Deploy microservices
+      - name: Deploy microservices
+        run: |
+          DEPLOYMENTS=("accounts-service" "authorization-service" "transactions-service")
+          
+          for DEPLOYMENT in "${DEPLOYMENTS[@]}"; do
+            CONTAINER_NAME="${DEPLOYMENT%-service}"
+            IMAGE_VAR="IMAGE_URI_${CONTAINER_NAME}"
+            IMAGE_URI="${!IMAGE_VAR}"
+
+            echo "Deploying $DEPLOYMENT using container $CONTAINER_NAME with image $IMAGE_URI..."
+            
+            # Update deployment image
+            kubectl set image deployment/$DEPLOYMENT $CONTAINER_NAME=$IMAGE_URI -n default
+
+            # Wait for rollout to complete
+            kubectl rollout status deployment/$DEPLOYMENT --timeout=5m || exit 1
+          done

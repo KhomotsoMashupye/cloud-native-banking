@@ -12,6 +12,14 @@ provider "aws" {
   region = var.aws_region
 }
 
+# --- KMS KEY (new) ---
+
+resource "aws_kms_key" "banking_key" {
+  description             = "Master key for banking data"
+  enable_key_rotation     = true
+  deletion_window_in_days = 30
+}
+
 # VPC 
 
 resource "aws_vpc" "eks_vpc" {
@@ -61,12 +69,12 @@ resource "aws_route_table_association" "public_assoc" {
 # NAT GATEWAY
 
 resource "aws_eip" "eks_nat_eip" {
-  count  = 2
+  count  = length(var.public_subnet_cidrs)
   domain = "vpc"
 }
 
 resource "aws_nat_gateway" "eks_nat" {
-  count         = 2
+  count         = length(var.public_subnet_cidrs)
   allocation_id = aws_eip.eks_nat_eip[count.index].id
   subnet_id     = aws_subnet.eks_public_subnet[count.index].id
   tags          = { Name = "eks-nat-${count.index + 1}" }
@@ -88,7 +96,7 @@ resource "aws_subnet" "eks_private_subnet" {
 # PRIVATE ROUTE TABLE 
 
 resource "aws_route_table" "eks_private_rt" {
-  count  = 2
+  count  = length(var.private_subnet_cidrs)
   vpc_id = aws_vpc.eks_vpc.id
   route {
     cidr_block     = "0.0.0.0/0"
