@@ -130,6 +130,13 @@ resource "aws_eks_cluster" "eks_cluster" {
   role_arn = aws_iam_role.eks_cluster_role.arn
   version  = "1.31"
 
+  encryption_config {
+    resources = ["secrets"]
+    provider {
+      key_arn = aws_kms_key.banking_key.arn
+    }
+  }
+
   vpc_config {
     subnet_ids              = aws_subnet.eks_private_subnet[*].id
     endpoint_private_access = true
@@ -218,6 +225,13 @@ resource "aws_db_subnet_group" "rds_subnets" {
 
   tags = { Name = "Banking DB Subnets" }
 }
+# random_password
+
+resource "random_password" "db_master_password" {
+  length           = 16
+  special          = true
+  override_special = "!#$%&*()-_=+[]{}<>:?"
+}
 
 # Primary RDS Instance
 
@@ -225,28 +239,24 @@ resource "aws_db_instance" "primary_db" {
   identifier           = "banking-db-primary"
   engine               = "postgres"
   
-  engine_version       = "16.11" 
+  engine_version       = "16.1" 
   
   instance_class       = "db.t3.medium"
   allocated_storage    = 20
   db_name              = "bankingdb"
   username             = "postgres"
-  password             = var.db_password
+  password             = random_password.db_master_password.result
   backup_retention_period   = 7
   apply_immediately = true
   
   db_subnet_group_name   = aws_db_subnet_group.rds_subnets.name
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
   
-  multi_az             = false
-  skip_final_snapshot  = true
+  multi_az             = true
+  skip_final_snapshot  = false
   publicly_accessible  = false
 }
-variable "db_password" {
-  description = "Master password for the RDS database"
-  type        = string
-  sensitive   = true 
-}
+
 
 # Read Replica
 
@@ -258,6 +268,17 @@ resource "aws_db_instance" "read_replica" {
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
   skip_final_snapshot   = true
   parameter_group_name  = aws_db_instance.primary_db.parameter_group_name
+}
+# SECRETS MANAGER
+
+resource "aws_secretsmanager_secret" "db_secret" {
+  name       = "banking/prod/db-password"
+  kms_key_id = aws_kms_key.banking_key.arn
+}
+
+resource "aws_secretsmanager_secret_version" "db_password" {
+  secret_id     = aws_secretsmanager_secret.db_secret.id
+  secret_string = random_password.db_master_password.result
 }
 
 
@@ -306,7 +327,7 @@ resource "aws_cloudwatch_log_group" "eks_log_group" {
 resource "aws_sns_topic" "banking_alerts" {
   name = "banking-transaction-alerts"
   
-  kms_master_key_id = "alias/aws/sns" 
+  kms_master_key_id = aws_kms_key.banking_key.arn
 }
 
 # SQS Queue (Processing)
@@ -369,6 +390,15 @@ resource "aws_s3_bucket_versioning" "analytics_lake_versioning" {
   versioning_configuration {
     status = "Enabled"
   }
+}
+
+# S3 Public Access Block
+resource "aws_s3_bucket_public_access_block" "analytics_block" {
+  bucket = aws_s3_bucket.analytics_lake.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }
 # AWS GLUE
 
