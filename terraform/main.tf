@@ -279,6 +279,29 @@ resource "aws_secretsmanager_secret" "db_secret" {
 resource "aws_secretsmanager_secret_version" "db_password" {
   secret_id     = aws_secretsmanager_secret.db_secret.id
   secret_string = random_password.db_master_password.result
+
+}
+
+resource "aws_vpc_endpoint" "secrets_endpoint" {
+  vpc_id              = aws_vpc.eks_vpc.id
+  service_name        = "com.amazonaws.${var.aws_region}.secretsmanager"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.eks_private_subnet[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoint_sg.id]
+  private_dns_enabled = true
+}
+
+# Security Group for the Endpoints
+resource "aws_security_group" "vpc_endpoint_sg" {
+  name        = "banking-vpc-endpoint-sg"
+  vpc_id      = aws_vpc.eks_vpc.id
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.eks_vpc.cidr_block] # Only allow traffic from within the VPC
+  }
 }
 
 
@@ -292,6 +315,29 @@ resource "aws_ecr_repository" "banking_app_repo" {
   image_scanning_configuration {
     scan_on_push = true
   }
+}
+# ECR API Endpoint (Authentication)
+
+resource "aws_vpc_endpoint" "ecr_api" {
+  vpc_id              = aws_vpc.eks_vpc.id
+  service_name        = "com.amazonaws.${var.aws_region}.ecr.api"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.eks_private_subnet[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoint_sg.id]
+  private_dns_enabled = true
+  tags                = { Name = "ecr-api-endpoint" }
+}
+
+# ECR Docker Endpoint (Image Layers)
+
+resource "aws_vpc_endpoint" "ecr_dkr" {
+  vpc_id              = aws_vpc.eks_vpc.id
+  service_name        = "com.amazonaws.${var.aws_region}.ecr.dkr"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.eks_private_subnet[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoint_sg.id]
+  private_dns_enabled = true
+  tags                = { Name = "ecr-dkr-endpoint" }
 }
 resource "aws_cognito_user_pool" "banking_user_pool" {
   name = "banking-app-users"
@@ -321,6 +367,55 @@ resource "aws_cognito_user_pool_client" "banking_client" {
 resource "aws_cloudwatch_log_group" "eks_log_group" {
   name              = "/aws/eks/banking-cluster/logs"
   retention_in_days = 7
+}
+resource "aws_cloudwatch_log_group" "vpc_flow_log_group" {
+  name              = "/aws/vpc/banking-flow-logs"
+  retention_in_days = 30 # Standard banking compliance is 30-90 days for hot storage
+}
+
+# IAM Role for the Flow Log service
+
+resource "aws_iam_role" "vpc_flow_log_role" {
+  name = "banking-vpc-flow-log-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "vpc-flow-logs.amazonaws.com" }
+    }]
+  })
+}
+
+#  Role Policy
+
+resource "aws_iam_role_policy" "vpc_flow_log_policy" {
+  name = "banking-vpc-flow-log-policy"
+  role = aws_iam_role.vpc_flow_log_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams"
+      ]
+      Effect   = "Allow"
+      Resource = "${aws_cloudwatch_log_group.vpc_flow_log_group.arn}:*"
+    }]
+  })
+}
+
+# VPC Flow Logs
+
+resource "aws_flow_log" "eks_vpc_flow_log" {
+  iam_role_arn    = aws_iam_role.vpc_flow_log_role.arn
+  log_destination = aws_cloudwatch_log_group.vpc_flow_log_group.arn
+  traffic_type    = "ALL" # Captures both 'Accept' and 'Reject' traffic
+  vpc_id          = aws_vpc.eks_vpc.id
 }
 
 # SNS 
@@ -399,6 +494,15 @@ resource "aws_s3_bucket_public_access_block" "analytics_block" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+resource "aws_vpc_endpoint" "s3_endpoint" {
+  vpc_id       = aws_vpc.eks_vpc.id
+  service_name = "com.amazonaws.${var.aws_region}.s3"
+  route_table_ids = concat(
+    [aws_route_table.public_rt.id],
+    aws_route_table.eks_private_rt[*].id
+  )
+  tags = { Name = "s3-endpoint" }
 }
 # AWS GLUE
 
