@@ -193,6 +193,92 @@ resource "aws_eks_node_group" "eks_node_group" {
 
   depends_on = [aws_iam_role_policy_attachment.node_policies]
 }
+# WAF
+
+resource "aws_wafv2_web_acl" "banking_waf" {
+  name        = "banking-production-waf"
+  description = "Bulletproof WAF for Banking Microservices"
+  scope       = "REGIONAL" 
+  
+  default_action {
+    allow {}
+  }
+
+  #  RULE 1: Amazon IP Reputation List 
+  
+  rule {
+    name     = "AWS-AmazonIpReputationList"
+    priority = 1
+    override_action { none {} }
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesAmazonIpReputationList"
+        vendor_name = "AWS"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "IpReputationMetric"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Core Rule Set (OWASP Top 10) ---
+
+  rule {
+    name     = "AWS-CommonRuleSet"
+    priority = 2
+    override_action { none {} }
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "CommonRuleSetMetric"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  #  Rate Limiting (The Brute Force Shield) 
+  
+  rule {
+    name     = "OverallRateLimit"
+    priority = 3
+    action {
+      block {}
+    }
+    statement {
+      rate_based_statement {
+        limit              = 1000
+        aggregate_key_type = "IP"
+      }
+    }
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "OverallRateLimitMetric"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "BankingWAFMainMetric"
+    sampled_requests_enabled   = true
+  }
+}
+# WAF Logs
+resource "aws_cloudwatch_log_group" "waf_logs" {
+  name              = "aws-waf-logs-banking" # Prefix "aws-waf-logs-" is REQUIRED
+  retention_in_days = 90
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "banking_waf_logging" {
+  log_destination_configs = [aws_cloudwatch_log_group.waf_logs.arn]
+  resource_arn            = aws_wafv2_web_acl.banking_waf.arn
+}
 # RDS Security Group
 
 resource "aws_security_group" "rds_sg" {
