@@ -1009,5 +1009,27 @@ resource "aws_athena_workgroup" "analytics" {
       output_location = "s3://${aws_s3_bucket.athena_results.bucket}/results/"
     }
   }
-}
+}# AWS Macie
 
+resource "aws_macie2_account" "banking_macie" {
+  finding_publishing_frequency = "FIFTEEN_MINUTES"
+  status                       = "ENABLED"
+}
+resource "aws_macie2_classification_job" "daily_pii_scan" {
+  job_type = "SCHEDULED"
+  name     = "daily-transaction-log-scan"
+  
+  schedule_frequency {
+    daily_schedule = "ENABLED"
+  }
+
+  s3_job_definition {
+    bucket_definitions {
+      account_id = data.aws_caller_identity.current.account_id
+      buckets    = [aws_s3_bucket.transaction_logs.id]
+    }
+  }
+  sampling_percentage = 50 
+  
+  depends_on = [aws_macie2_account.banking_macie]
+}
