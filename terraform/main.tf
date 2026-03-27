@@ -125,74 +125,6 @@ resource "aws_route_table_association" "eks_private_assoc" {
   route_table_id = aws_route_table.eks_private_rt[count.index].id
 }
 
-#  Application Load Balancer
-
-resource "aws_lb" "eks_alb" {
-  name               = "banking-services-alb"
-  internal           = false # Public facing
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb_sg.id]
-  subnets            = aws_subnet.eks_public_subnet[*].id
-
-  enable_deletion_protection = true
-  tags = { Name = "banking-alb" }
-}
-
-# ALB Security Group 
-
-resource "aws_security_group" "alb_sg" {
-  name        = "banking-alb-sg"
-  description = "Allow HTTP/HTTPS to ALB"
-  vpc_id      = aws_vpc.eks_vpc.id
-
-  ingress {
-    description = "Allow HTTP from internet"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-# Target Group for Authorization Service
-
-resource "aws_lb_target_group" "auth_tg" {
-  name        = "auth-service-tg"
-  port        = 8000
-  protocol    = "HTTP"
-  vpc_id      = aws_vpc.eks_vpc.id
-  target_type = "ip" 
-
-  health_check {
-    path                = "/health"
-    interval            = 30
-    timeout             = 5
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-  }
-}
-
-# HTTP Listener
-
-resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.eks_alb.arn
-  port              = "80"
-  protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.auth_tg.arn
-  }
-}
-
-
-
 # EKS Cluster Security Group
 
 resource "aws_security_group" "eks_cluster_sg" {
@@ -224,6 +156,55 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
   role       = aws_iam_role.eks_cluster_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
+
+# Cluster Autoscaler
+
+resource "aws_iam_policy" "cluster_autoscaler" {
+  name        = "EKSClusterAutoscalerPolicy"
+  description = "Allows EKS to scale EC2 instances"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:DescribeAutoScalingInstances",
+          "autoscaling:DescribeLaunchConfigurations",
+          "autoscaling:DescribeTags",
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:TerminateInstanceInAutoScalingGroup"
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ca_attach" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = aws_iam_policy.cluster_autoscaler.arn
+}
+
+resource "helm_release" "cluster_autoscaler" {
+  name       = "cluster-autoscaler"
+  repository = "https://kubernetes.github.io/autoscaler"
+  chart      = "cluster-autoscaler"
+  namespace  = "kube-system"
+
+  set {
+    name  = "autoDiscovery.clusterName"
+    value = aws_eks_cluster.eks_cluster.name
+  }
+
+  set {
+    name  = "awsRegion"
+    value = "af-south-1" 
+  }
+}
+
+
 # EKS Cluster
 
 resource "aws_eks_cluster" "eks_cluster" {
@@ -318,6 +299,7 @@ resource "aws_iam_role_policy_attachment" "node_policies" {
   policy_arn = each.value
 }
 
+
 # EKS Node Group
 
 resource "aws_eks_node_group" "eks_node_group" {
@@ -389,7 +371,7 @@ resource "aws_launch_template" "eks_nodes_lt" {
 
 resource "aws_wafv2_web_acl" "banking_waf" {
   name        = "banking-production-waf"
-  description = "Bulletproof WAF for Banking Microservices"
+  description = " WAF for Banking Microservices"
   scope       = "REGIONAL" 
   
   default_action {
@@ -468,19 +450,13 @@ resource "aws_wafv2_web_acl" "banking_waf" {
 # WAF Logs
 
 resource "aws_cloudwatch_log_group" "waf_logs" {
-  name              = "aws-waf-logs-banking" # Prefix "aws-waf-logs-" is REQUIRED
+  name              = "aws-waf-logs-banking" 
   retention_in_days = 90
 }
 
 resource "aws_wafv2_web_acl_logging_configuration" "banking_waf_logging" {
   log_destination_configs = [aws_cloudwatch_log_group.waf_logs.arn]
   resource_arn            = aws_wafv2_web_acl.banking_waf.arn
-}
-# WAF to ALB Association
-
-resource "aws_wafv2_web_acl_association" "waf_assoc" {
-  resource_arn = aws_lb.eks_alb.arn
-  web_acl_arn  = aws_wafv2_web_acl.banking_waf.arn
 }
 # RDS Security Group
 
@@ -515,7 +491,7 @@ resource "aws_db_subnet_group" "rds_subnets" {
 
   tags = { Name = "Banking DB Subnets" }
 }
-# random_password
+# Random Database Password
 
 resource "random_password" "db_master_password" {
   length           = 16
@@ -783,7 +759,7 @@ resource "aws_cloudwatch_log_group" "eks_log_group" {
 }
 resource "aws_cloudwatch_log_group" "vpc_flow_log_group" {
   name              = "/aws/vpc/banking-flow-logs"
-  retention_in_days = 30 # Standard banking compliance is 30-90 days for hot storage
+  retention_in_days = 30 
 }
 
 # IAM Role for the Flow Log service
@@ -1032,4 +1008,92 @@ resource "aws_macie2_classification_job" "daily_pii_scan" {
   sampling_percentage = 50 
   
   depends_on = [aws_macie2_account.banking_macie]
+}
+# AWS Guard Duty
+
+resource "aws_guardduty_detector" "banking_guardduty" {
+  enable                       = true
+  finding_publishing_frequency = "FIFTEEN_MINUTES"
+}
+
+# Kubernetes Audit Logs
+
+resource "aws_guardduty_detector_feature" "eks_audit" {
+  detector_id = aws_guardduty_detector.banking_guardduty.id
+  name        = "EKS_AUDIT_LOGS"
+  status      = "ENABLED"
+}
+
+# Runtime Monitoring
+
+resource "aws_guardduty_detector_feature" "runtime_monitoring" {
+  detector_id = aws_guardduty_detector.banking_guardduty.id
+  name        = "EKS_RUNTIME_MONITORING"
+  status      = "ENABLED"
+
+  additional_configuration {
+    name   = "EKS_ADDON_MANAGEMENT"
+    status = "ENABLED"
+  }
+}
+# Malware Protection
+
+resource "aws_guardduty_detector_feature" "malware_protection" {
+  detector_id = aws_guardduty_detector.banking_guardduty.id
+  name        = "EBS_MALWARE_PROTECTION"
+  status      = "ENABLED"
+}
+
+# Guard Duty Alerts
+
+resource "aws_sns_topic" "guardduty_alerts" {
+  name = "banking-guardduty-alerts"
+}
+
+resource "aws_sns_topic_subscription" "email_alert" {
+  topic_arn = aws_sns_topic.guardduty_alerts.arn
+  protocol  = "email"
+  endpoint  = "your-email@example.com"
+}
+
+# Event Rule
+
+resource "aws_cloudwatch_event_rule" "guardduty_finding_rule" {
+  name        = "guardduty-severity-filter"
+  description = "Trigger SNS for Medium and High GuardDuty findings"
+
+  event_pattern = jsonencode({
+    source      = ["aws.guardduty"]
+    detail-type = ["GuardDuty Finding"]
+    detail = {
+      # This logic says: "Only alert if severity is 4 or higher"
+      severity = [{ numeric = [">=", 4] }]
+    }
+  })
+}
+# SNS Target
+
+resource "aws_cloudwatch_event_target" "sns_target" {
+  rule      = aws_cloudwatch_event_rule.guardduty_finding_rule.name
+  target_id = "SendToSNS"
+  arn       = aws_sns_topic.guardduty_alerts.arn
+}
+
+# Topic Policy
+
+resource "aws_sns_topic_policy" "default" {
+  arn    = aws_sns_topic.guardduty_alerts.arn
+  policy = data.aws_iam_policy_document.sns_topic_policy.json
+}
+
+data.aws_iam_policy_document "sns_topic_policy" {
+  statement {
+    actions = ["sns:Publish"]
+    effect  = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+    resources = [aws_sns_topic.guardduty_alerts.arn]
+  }
 }
