@@ -560,6 +560,72 @@ resource "aws_db_instance" "read_replica" {
   skip_final_snapshot   = true
   parameter_group_name  = aws_db_instance.primary_db.parameter_group_name
 }
+# Elasticache
+
+resource "aws_elasticache_replication_group" "redis" {
+  replication_group_id          = "banking-cache"
+  description                   = "Cache for transaction sessions"
+  node_type                     = "cache.t3.medium"
+  num_cache_clusters            = 2
+  parameter_group_name          = "default.redis7"
+  port                          = 6379
+  subnet_group_name             = aws_elasticache_subnet_group.main.name
+  security_group_ids            = [aws_security_group.redis_sg.id]
+  automatic_failover_enabled     = true
+}
+# Elasticache Subnet Group
+
+resource "aws_elasticache_subnet_group" "main" {
+  name       = "banking-cache-subnets"
+  subnet_ids = var.private_subnet_ids
+}
+# Elasticache Security Group
+
+resource "aws_security_group" "redis_sg" {
+  name        = "banking-redis-sg"
+  description = "Allow EKS nodes to talk to Redis"
+  vpc_id      = aws_vpc.eks_vpc.id
+
+  ingress {
+    description     = "Redis from EKS Nodes"
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    # This is the "Magic Link" to your existing EKS node SG
+    security_groups = [aws_security_group.eks_nodes_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "banking-redis-sg"
+  }
+}
+# AWS Xray
+
+resource "aws_xray_sampling_rule" "bank_sampling" {
+  rule_name      = "BankingApp"
+  priority       = 1000
+  version        = 1
+  reservoir_size = 1
+  fixed_rate     = 0.05
+  url_path       = "*"
+  host           = "*"
+  http_method    = "*"
+  service_type   = "*"
+  service_name   = "*"
+  resource_arn   = "*"
+}
+resource "aws_iam_role_policy_attachment" "node_xray" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 # SECRETS MANAGER
 
 resource "aws_secretsmanager_secret_version" "db_password" {
