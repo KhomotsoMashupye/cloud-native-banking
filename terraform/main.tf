@@ -117,13 +117,100 @@ resource "aws_route_table" "eks_private_rt" {
   }
   tags = { Name = "eks-private-rt-${count.index + 1}" }
 }
+# Route Table Association
 
 resource "aws_route_table_association" "eks_private_assoc" {
   count          = 2
   subnet_id      = aws_subnet.eks_private_subnet[count.index].id
   route_table_id = aws_route_table.eks_private_rt[count.index].id
 }
-# EKS Cluster Setup
+
+#  Application Load Balancer
+
+resource "aws_lb" "eks_alb" {
+  name               = "banking-services-alb"
+  internal           = false # Public facing
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb_sg.id]
+  subnets            = aws_subnet.eks_public_subnet[*].id
+
+  enable_deletion_protection = true
+  tags = { Name = "banking-alb" }
+}
+
+# ALB Security Group 
+
+resource "aws_security_group" "alb_sg" {
+  name        = "banking-alb-sg"
+  description = "Allow HTTP/HTTPS to ALB"
+  vpc_id      = aws_vpc.eks_vpc.id
+
+  ingress {
+    description = "Allow HTTP from internet"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+# Target Group for Authorization Service
+
+resource "aws_lb_target_group" "auth_tg" {
+  name        = "auth-service-tg"
+  port        = 8000
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.eks_vpc.id
+  target_type = "ip" 
+
+  health_check {
+    path                = "/health"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+}
+
+# HTTP Listener
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.eks_alb.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.auth_tg.arn
+  }
+}
+
+
+
+# EKS Cluster Security Group
+
+resource "aws_security_group" "eks_cluster_sg" {
+  name        = "banking-cluster-sg"
+  description = "Cluster communication with worker nodes"
+  vpc_id      = aws_vpc.eks_vpc.id
+
+  tags = { Name = "eks-cluster-sg" }
+}
+
+
+resource "aws_vpc_security_group_egress_rule" "cluster_to_nodes" {
+  security_group_id = aws_security_group.eks_cluster_sg.id
+  
+  referenced_security_group_id = aws_security_group.eks_nodes_sg.id
+  ip_protocol                  = "-1"
+}
+# EKS Cluster Role
 
 resource "aws_iam_role" "eks_cluster_role" {
   name = "eks-cluster-role-usw2"
@@ -137,6 +224,7 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
   role       = aws_iam_role.eks_cluster_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
+# EKS Cluster
 
 resource "aws_eks_cluster" "eks_cluster" {
   name     = "eks-banking-cluster"
@@ -152,6 +240,9 @@ resource "aws_eks_cluster" "eks_cluster" {
 
   vpc_config {
     subnet_ids              = aws_subnet.eks_private_subnet[*].id
+    
+    security_group_ids      = [aws_security_group.eks_cluster_sg.id]
+    
     endpoint_private_access = true
     endpoint_public_access  = true
   }
@@ -166,6 +257,47 @@ resource "aws_eks_cluster" "eks_cluster" {
 
 
 # Managed Node Group
+
+# EKS Nodes Security Group
+
+resource "aws_security_group" "eks_nodes_sg" {
+  name        = "banking-nodes-sg"
+  description = "Security group for all nodes in the cluster"
+  vpc_id      = aws_vpc.eks_vpc.id
+
+  tags = {
+    Name                                        = "banking-nodes-sg"
+    "kubernetes.io/cluster/eks-banking-cluster" = "owned"
+  }
+}
+
+
+resource "aws_vpc_security_group_ingress_rule" "nodes_internal" {
+  security_group_id = aws_security_group.eks_nodes_sg.id
+  
+  referenced_security_group_id = aws_security_group.eks_nodes_sg.id
+  ip_protocol                  = "-1"
+}
+
+# Allow traffic ALB
+
+resource "aws_vpc_security_group_ingress_rule" "alb_to_nodes" {
+  security_group_id = aws_security_group.eks_nodes_sg.id
+  
+  referenced_security_group_id = aws_security_group.alb_sg.id
+  from_port                    = 0
+  to_port                      = 65535
+  ip_protocol                  = "tcp"
+}
+
+# Standard Outbound 
+
+resource "aws_vpc_security_group_egress_rule" "nodes_outbound" {
+  security_group_id = aws_security_group.eks_nodes_sg.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}
+# EKS Node Group Role
 
 resource "aws_iam_role" "eks_node_role" {
   name = "eks-node-group-role-usw2"
@@ -186,25 +318,72 @@ resource "aws_iam_role_policy_attachment" "node_policies" {
   policy_arn = each.value
 }
 
+# EKS Node Group
+
 resource "aws_eks_node_group" "eks_node_group" {
   cluster_name    = aws_eks_cluster.eks_cluster.name
   node_group_name = "banking-node-group"
   node_role_arn   = aws_iam_role.eks_node_role.arn
   subnet_ids      = aws_subnet.eks_private_subnet[*].id
-  ami_type        = "AL2023_x86_64_STANDARD" 
-  instance_types  = ["t3.medium"]
+  ami_type        = "AL2023_x86_64_STANDARD"
+
+  
+  launch_template {
+    id      = aws_launch_template.eks_nodes_lt.id
+    version = aws_launch_template.eks_nodes_lt.latest_version
+  }
 
   scaling_config {
     desired_size = 2
     max_size     = 3
     min_size     = 1
   }
+  update_config {
+    max_unavailable = 1
+  }
 
   timeouts {
     delete = "20m"
   }
 
-  depends_on = [aws_iam_role_policy_attachment.node_policies]
+  depends_on = [
+    aws_iam_role_policy_attachment.node_policies,
+    aws_launch_template.eks_nodes_lt
+  ]
+}
+
+# Launch Template for EKS Nodes
+
+resource "aws_launch_template" "eks_nodes_lt" {
+  name_prefix   = "banking-nodes-lt-"
+  description   = "Launch template for banking EKS nodes"
+  instance_type = "t3.medium"
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 20
+      volume_type           = "gp3"
+      encrypted             = true
+      kms_key_id            = aws_kms_key.banking_key.arn
+      delete_on_termination = true
+    }
+  }
+
+  monitoring {
+    enabled = true 
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "banking-eks-node"
+    }
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 # WAF
 
@@ -222,7 +401,9 @@ resource "aws_wafv2_web_acl" "banking_waf" {
   rule {
     name     = "AWS-AmazonIpReputationList"
     priority = 1
-    override_action { none {} }
+    override_action { 
+      none {} 
+      }
     statement {
       managed_rule_group_statement {
         name        = "AWSManagedRulesAmazonIpReputationList"
@@ -236,12 +417,14 @@ resource "aws_wafv2_web_acl" "banking_waf" {
     }
   }
 
-  # Core Rule Set (OWASP Top 10) ---
+  # Core Rule Set (OWASP Top 10)
 
   rule {
     name     = "AWS-CommonRuleSet"
     priority = 2
-    override_action { none {} }
+    override_action {
+       none {} 
+       }
     statement {
       managed_rule_group_statement {
         name        = "AWSManagedRulesCommonRuleSet"
@@ -282,7 +465,8 @@ resource "aws_wafv2_web_acl" "banking_waf" {
     sampled_requests_enabled   = true
   }
 }
-# WAF Logs/8
+# WAF Logs
+
 resource "aws_cloudwatch_log_group" "waf_logs" {
   name              = "aws-waf-logs-banking" # Prefix "aws-waf-logs-" is REQUIRED
   retention_in_days = 90
@@ -291,6 +475,12 @@ resource "aws_cloudwatch_log_group" "waf_logs" {
 resource "aws_wafv2_web_acl_logging_configuration" "banking_waf_logging" {
   log_destination_configs = [aws_cloudwatch_log_group.waf_logs.arn]
   resource_arn            = aws_wafv2_web_acl.banking_waf.arn
+}
+# WAF to ALB Association
+
+resource "aws_wafv2_web_acl_association" "waf_assoc" {
+  resource_arn = aws_lb.eks_alb.arn
+  web_acl_arn  = aws_wafv2_web_acl.banking_waf.arn
 }
 # RDS Security Group
 
@@ -305,7 +495,7 @@ resource "aws_security_group" "rds_sg" {
     to_port         = 5432
     protocol        = "tcp"
     
-    security_groups = [aws_eks_cluster.eks_cluster.vpc_config[0].cluster_security_group_id]
+   security_groups = [aws_security_group.eks_nodes_sg.id]
   }
 
   egress {
@@ -314,6 +504,7 @@ resource "aws_security_group" "rds_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
 }
 
 # RDS Subnet Group
@@ -365,17 +556,11 @@ resource "aws_db_instance" "read_replica" {
   identifier            = "banking-db-replica"
   replicate_source_db   = aws_db_instance.primary_db.identifier
   instance_class        = "db.t3.medium"
-  # Read replicas inherit the engine/version but need their own SG
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
   skip_final_snapshot   = true
   parameter_group_name  = aws_db_instance.primary_db.parameter_group_name
 }
 # SECRETS MANAGER
-
-resource "aws_secretsmanager_secret" "db_secret" {
-  name       = "banking/prod/db-password"
-  kms_key_id = aws_kms_key.banking_key.arn
-}
 
 resource "aws_secretsmanager_secret_version" "db_password" {
   secret_id     = aws_secretsmanager_secret.db_secret.id
@@ -641,6 +826,16 @@ resource "aws_s3_bucket" "analytics_lake" {
   bucket        = "banking-analytics-lake-2242"
   force_destroy = false
 }
+resource "aws_s3_bucket_server_side_encryption_configuration" "lake_encryption" {
+  bucket = aws_s3_bucket.analytics_lake.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = aws_kms_key.banking_key.arn
+      sse_algorithm     = "aws:kms"
+    }
+  }
+}
 
 resource "aws_s3_bucket_versioning" "analytics_lake_versioning" {
   bucket = aws_s3_bucket.analytics_lake.id
@@ -650,6 +845,7 @@ resource "aws_s3_bucket_versioning" "analytics_lake_versioning" {
 }
 
 # S3 Public Access Block
+
 resource "aws_s3_bucket_public_access_block" "analytics_block" {
   bucket = aws_s3_bucket.analytics_lake.id
   block_public_acls       = true
