@@ -11,12 +11,25 @@ terraform {
 provider "aws" {
   region = var.aws_region
 }
-
+provider "aws" {
+  alias  = "replica"
+  region = "eu-west-1" # For Disaster recovery
+}
 # KMS KEY 
 
 resource "aws_kms_key" "banking_key" {
   description             = "Master key for banking data"
   enable_key_rotation     = true
+  deletion_window_in_days = 30
+  multi_region            = true 
+}
+
+# The Replica Key in the second region
+
+resource "aws_kms_replica_key" "banking_key_replica" {
+  provider                = aws.replica
+  description             = "Replica of banking master key"
+  primary_key_arn         = aws_kms_key.banking_key.arn
   deletion_window_in_days = 30
 }
 
@@ -269,7 +282,7 @@ resource "aws_wafv2_web_acl" "banking_waf" {
     sampled_requests_enabled   = true
   }
 }
-# WAF Logs
+# WAF Logs/8
 resource "aws_cloudwatch_log_group" "waf_logs" {
   name              = "aws-waf-logs-banking" # Prefix "aws-waf-logs-" is REQUIRED
   retention_in_days = 90
@@ -337,6 +350,8 @@ resource "aws_db_instance" "primary_db" {
   
   db_subnet_group_name   = aws_db_subnet_group.rds_subnets.name
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
+  storage_encrypted    = true
+  kms_key_id           = aws_kms_key.banking_key.arn
   
   multi_az             = true
   skip_final_snapshot  = false
@@ -366,6 +381,14 @@ resource "aws_secretsmanager_secret_version" "db_password" {
   secret_id     = aws_secretsmanager_secret.db_secret.id
   secret_string = random_password.db_master_password.result
 
+}
+
+resource "aws_secretsmanager_secret" "db_secret" {
+  name       = "banking/prod/db-password"
+  kms_key_id = aws_kms_key.banking_key.arn
+  replica {
+    region = "eu-west-1"
+  }
 }
 
 resource "aws_vpc_endpoint" "secrets_endpoint" {
@@ -447,7 +470,60 @@ resource "aws_cognito_user_pool_client" "banking_client" {
   
   explicit_auth_flows = ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
 }
+#  TLS certificate for the EKS OIDC issuer
 
+data "tls_certificate" "eks" {
+  url = aws_eks_cluster.eks_cluster.identity[0].oidc[0].issuer
+}
+
+# OIDC Provider in IAM
+
+resource "aws_iam_openid_connect_provider" "eks" {
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
+  url             = aws_eks_cluster.eks_cluster.identity[0].oidc[0].issuer
+}
+# The Trust Policy
+resource "aws_iam_role" "notifications_irsa" {
+  name = "banking-notifications-irsa"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.eks.arn
+        }
+        Condition = {
+          StringEquals = {
+            # This limits the role to a specific Namespace and ServiceAccount name in K8s
+            "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub" = "system:serviceaccount:banking:notifications-sa"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# The "Permission Policy" 
+
+resource "aws_iam_role_policy" "notifications_sns_policy" {
+  name = "notifications-sns-access"
+  role = aws_iam_role.notifications_irsa.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "sns:Publish"
+        Resource = aws_sns_topic.banking_alerts.arn
+      }
+    ]
+  })
+}
 # CLOUDWATCH LOG GROUP
 
 resource "aws_cloudwatch_log_group" "eks_log_group" {
